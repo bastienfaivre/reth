@@ -146,15 +146,20 @@ impl<N: NodePrimitives> OverlayManager<N> {
             range,
             partial_state_trie,
             finish,
+            None,
         )
     }
 
+    /// Like [`Self::get_or_compute_cached_changesets_range`], with frontiers already read from
+    /// `provider` and, optionally, the in-memory chain ending at `finish` taken before `provider`'s
+    /// database transaction was opened.
     pub(crate) fn get_or_compute_cached_changesets_range_at_frontiers<P>(
         &self,
         provider: &P,
         range: RangeInclusive<BlockNumber>,
         partial_state_trie: BlockNumHash,
         finish: BlockNumHash,
+        finish_state: Option<Arc<BlockState<N>>>,
     ) -> ProviderResult<Arc<TrieUpdatesSorted>>
     where
         P: DBProvider
@@ -165,7 +170,14 @@ impl<N: NodePrimitives> OverlayManager<N> {
             + BlockNumReader
             + StorageSettingsCache,
     {
-        self.changeset_cache.get_or_compute_range(self, provider, range, partial_state_trie, finish)
+        self.changeset_cache.get_or_compute_range(
+            self,
+            provider,
+            range,
+            partial_state_trie,
+            finish,
+            finish_state,
+        )
     }
 
     /// Evicts cached changesets for blocks below `up_to_block`.
