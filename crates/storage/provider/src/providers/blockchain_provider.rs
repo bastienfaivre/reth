@@ -181,7 +181,7 @@ impl<N: ProviderNodeTypes> BlockchainProvider<N> {
     /// If `block_hash` is in the view's in-memory snapshot, the overlay is built from that
     /// snapshot instead of the overlay manager: blocks may have been persisted after the view's
     /// database transaction was opened and then evicted from the manager.
-    fn state_provider_from_consistent(
+    fn state_provider_from_consistent_view(
         &self,
         provider: ConsistentProvider<N>,
         block_hash: B256,
@@ -825,14 +825,14 @@ impl<N: ProviderNodeTypes> StateProviderFactory for BlockchainProvider<N> {
         let hash = provider
             .block_hash(block_number)?
             .ok_or_else(|| ProviderError::HeaderNotFound(block_number.into()))?;
-        Ok(self.state_provider_from_consistent(provider, hash))
+        Ok(self.state_provider_from_consistent_view(provider, hash))
     }
 
     fn history_by_block_hash(&self, block_hash: BlockHash) -> ProviderResult<StateProviderBox> {
         trace!(target: "providers::blockchain", ?block_hash, "Getting history by block hash");
         let provider = self.consistent_provider()?;
         provider.block_number(block_hash)?.ok_or(ProviderError::BlockHashNotFound(block_hash))?;
-        Ok(self.state_provider_from_consistent(provider, block_hash))
+        Ok(self.state_provider_from_consistent_view(provider, block_hash))
     }
 
     fn state_by_block_hash(&self, hash: BlockHash) -> ProviderResult<StateProviderBox> {
