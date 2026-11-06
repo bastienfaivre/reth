@@ -80,13 +80,10 @@ impl<N: ProviderNodeTypes> ConsistentProvider<N> {
         self.storage_provider
     }
 
-    /// Returns the in-memory chain ending at `hash`, if `hash` was part of the canonical in-memory
-    /// chain when this view was created.
-    pub(crate) fn in_memory_state_by_hash(
-        &self,
-        hash: B256,
-    ) -> Option<Arc<BlockState<N::Primitives>>> {
-        self.head_block.clone()?.iter().find(|state| state.hash() == hash)
+    /// Returns the canonical in-memory chain as it was when this view was created, before its
+    /// database transaction was opened.
+    pub(crate) fn head_state(&self) -> Option<Arc<BlockState<N::Primitives>>> {
+        self.head_block.clone()
     }
 
     // Helper function to convert range bounds
