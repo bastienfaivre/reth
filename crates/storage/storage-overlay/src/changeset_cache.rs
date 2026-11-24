@@ -11,6 +11,7 @@ use crate::{database_state_frontiers, OverlayManager, OverlayStateProvider};
 use alloy_eips::BlockNumHash;
 use alloy_primitives::{map::B256Map, BlockNumber, B256};
 use parking_lot::RwLock;
+use reth_chain_state::BlockState;
 use reth_metrics::{
     metrics::{Counter, Gauge},
     Metrics,
@@ -120,6 +121,7 @@ where
         (block_number + 1)..=finish.number,
         partial_state_trie,
         finish,
+        None,
         true,
     )?;
 
@@ -235,6 +237,7 @@ impl ChangesetCache {
             block_number..=block_number,
             partial_state_trie,
             finish,
+            None,
             true,
         )
     }
@@ -253,6 +256,9 @@ impl ChangesetCache {
     ///
     /// * `provider` - Database provider for DB access and block lookups
     /// * `range` - Block range to accumulate reverts for (inclusive)
+    /// * `finish_state` - In-memory chain ending at `finish`, taken before `provider`'s database
+    ///   transaction was opened. Without it, the fallback looks that chain up in the live in-memory
+    ///   state, which may have evicted blocks persisted since.
     /// * `write_reverts_to_cache` - Whether to retain the accumulated reverts. Callers serving
     ///   ranges an untrusted peer chooses pass `false`, since entries stay until their start block
     ///   is evicted.
@@ -268,6 +274,7 @@ impl ChangesetCache {
     /// - Database access fails
     /// - Block hash lookup fails
     /// - Changeset computation fails
+    #[expect(clippy::too_many_arguments)]
     pub(crate) fn get_or_compute_range<N, P>(
         &self,
         overlay_manager: &OverlayManager<N>,
@@ -275,6 +282,7 @@ impl ChangesetCache {
         range: RangeInclusive<BlockNumber>,
         partial_state_trie: BlockNumHash,
         finish: BlockNumHash,
+        finish_state: Option<Arc<BlockState<N>>>,
         write_reverts_to_cache: bool,
     ) -> ProviderResult<Arc<TrieUpdatesSorted>>
     where
@@ -407,10 +415,17 @@ impl ChangesetCache {
             "Changeset cache MISS in range, falling back to aggregate DB-based computation"
         );
 
-        let overlay = overlay_manager
-            .overlay_builder(finish.hash)
-            .with_no_reverts()
-            .build_state_trie_overlay_at_frontiers(provider, partial_state_trie, finish, true)?;
+        let overlay = match finish_state {
+            Some(state) => overlay_manager.overlay_builder_for_state(state),
+            None => overlay_manager.overlay_builder(finish.hash),
+        }
+        .with_no_reverts()
+        .build_state_trie_overlay_at_frontiers(
+            provider,
+            partial_state_trie,
+            finish,
+            true,
+        )?;
 
         // Forward updates are a best-effort optimization to speed up compute_range_trie_changesets,
         // missing blocks do not affect correctness.
@@ -945,8 +960,9 @@ mod tests {
         let before = factory.provider().unwrap();
         let cache = manager.changeset_cache();
         let (frontier, finish) = database_state_frontiers(&before).unwrap();
-        let result =
-            cache.get_or_compute_range(&manager, &before, 1..=2, frontier, finish, true).unwrap();
+        let result = cache
+            .get_or_compute_range(&manager, &before, 1..=2, frontier, finish, None, true)
+            .unwrap();
         assert_eq!(
             result.storage_tries_ref()[&hashed_address].storage_nodes_ref(),
             &[(removed, None), (replaced, None)],
@@ -958,14 +974,16 @@ mod tests {
         provider_rw.commit().unwrap();
         let after = factory.provider().unwrap();
         let (frontier, finish) = database_state_frontiers(&after).unwrap();
-        let advanced =
-            cache.get_or_compute_range(&manager, &after, 1..=2, frontier, finish, true).unwrap();
+        let advanced = cache
+            .get_or_compute_range(&manager, &after, 1..=2, frontier, finish, None, true)
+            .unwrap();
         assert!(Arc::ptr_eq(&advanced, &result));
 
         // A cold calculation at the newer frontier must also serve the older reader.
         cache.evict(2);
-        let advanced =
-            cache.get_or_compute_range(&manager, &after, 1..=2, frontier, finish, true).unwrap();
+        let advanced = cache
+            .get_or_compute_range(&manager, &after, 1..=2, frontier, finish, None, true)
+            .unwrap();
         assert_eq!(advanced, result);
 
         // An older reader must still receive the deletion after the frontier advances.
@@ -1172,6 +1190,7 @@ mod tests {
                 1..=2,
                 partial_state_trie,
                 finish,
+                None,
                 true,
             )
             .unwrap();
@@ -1274,6 +1293,7 @@ mod tests {
                 1..=3,
                 partial_state_trie,
                 finish,
+                None,
                 false,
             )
             .unwrap();
@@ -1287,6 +1307,7 @@ mod tests {
                 1..=3,
                 partial_state_trie,
                 finish,
+                None,
                 true,
             )
             .unwrap();
