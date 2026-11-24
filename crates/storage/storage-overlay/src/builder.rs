@@ -191,6 +191,12 @@ pub struct OverlayBuilder<N: NodePrimitives = EthPrimitives> {
     /// This is shared with the caller so that a chain the caller already holds (for example the
     /// canonical in-memory chain) can be reused instead of looked up again.
     parent_state: Option<Arc<BlockState<N>>>,
+    /// Snapshot of the canonical in-memory chain, taken before the caller opened its database
+    /// transaction.
+    ///
+    /// When set, the chain ending at the database tip, which reverts need, is taken from this
+    /// snapshot instead of the live in-memory state, which may have evicted it since.
+    canonical_snapshot: Option<Arc<BlockState<N>>>,
     /// Anchor hash of the reused sparse trie, if this task reused one.
     reused_sparse_trie_anchor_hash: Option<B256>,
     /// Whether building the overlay may query revert changesets.
@@ -212,6 +218,7 @@ impl<N: NodePrimitives> OverlayBuilder<N> {
             parent_hash,
             overlay_manager,
             parent_state,
+            canonical_snapshot: None,
             reused_sparse_trie_anchor_hash: None,
             no_reverts: false,
             overlay_cache_config: OverlayCacheConfig::default(),
@@ -248,6 +255,17 @@ impl<N: NodePrimitives> OverlayBuilder<N> {
     /// Returns the manager this builder resolves overlays from.
     pub(crate) const fn overlay_manager(&self) -> &OverlayManager<N> {
         &self.overlay_manager
+    }
+
+    /// Resolves the database tip's in-memory chain from `head`, a snapshot of the canonical
+    /// in-memory chain that must be taken before the caller opens its database transaction.
+    ///
+    /// Reverts need the chain ending at the database tip. Without a snapshot it is looked up in
+    /// the live in-memory state, which may have evicted blocks persisted after the transaction was
+    /// opened. `None` keeps that behavior.
+    pub fn with_canonical_snapshot(mut self, head: Option<Arc<BlockState<N>>>) -> Self {
+        self.canonical_snapshot = head;
+        self
     }
 
     /// Appends an executed block to this builder's in-memory parent state.
@@ -477,6 +495,7 @@ impl<N: NodePrimitives> OverlayBuilder<N> {
                             revert_blocks.clone(),
                             state_trie_tip_block,
                             finish_tip_block,
+                            self.snapshot_state(finish_tip_block.hash),
                             self.write_reverts_to_cache,
                         )?;
                     retrieve_trie_reverts_duration = start.elapsed();
@@ -489,9 +508,12 @@ impl<N: NodePrimitives> OverlayBuilder<N> {
                     // masked DB rows. Complete the trie at Finish before applying those prefixes.
                     let start = Instant::now();
                     let finish_state = self
-                        .overlay_manager
-                        .in_memory_state()
-                        .state_by_hash(finish_tip_block.hash)
+                        .snapshot_state(finish_tip_block.hash)
+                        .or_else(|| {
+                            self.overlay_manager
+                                .in_memory_state()
+                                .state_by_hash(finish_tip_block.hash)
+                        })
                         .ok_or_else(|| {
                             ProviderError::other(StateTrieOverlayError {
                                 tip_hash: finish_tip_block.hash,
@@ -727,6 +749,11 @@ impl<N: NodePrimitives> OverlayBuilder<N> {
                 Ok(Some(anchor.number + 1..=finish.number))
             }
         }
+    }
+
+    /// Returns the chain ending at `hash` from the canonical snapshot, if the snapshot holds it.
+    fn snapshot_state(&self, hash: B256) -> Option<Arc<BlockState<N>>> {
+        self.canonical_snapshot.clone()?.iter().find(|state| state.hash() == hash)
     }
 
     /// Returns true if managed overlay resolution can be skipped for this builder.
